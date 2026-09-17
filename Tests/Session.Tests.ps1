@@ -185,11 +185,63 @@ Describe 'Internal request/session helpers' {
         }
     }
 
-    It 'escapes cmd arguments using cmd-safe quoting rules' {
+    It 'quotes cmd arguments so cmd.exe, %VAR% expansion and the CRT argv parser all see them literally' {
         InModuleScope PSMcpClient {
-            ConvertTo-CmdArgument 'abc' | Should -Be '"abc"'
-            ConvertTo-CmdArgument 'has space' | Should -Be '"has space"'
-            ConvertTo-CmdArgument 'x"y%z!q' | Should -Be '"x""y%%z!q"'
+            ConvertTo-CmdArgument 'abc'         | Should -BeExactly '"abc"'
+            ConvertTo-CmdArgument 'has space'   | Should -BeExactly '"has space"'
+            ConvertTo-CmdArgument ''            | Should -BeExactly '""'
+            ConvertTo-CmdArgument 'x"y'         | Should -BeExactly '"x""y"'
+            ConvertTo-CmdArgument '100%'        | Should -BeExactly '"100%%cd:~,%"'
+            ConvertTo-CmdArgument '%PATH%'      | Should -BeExactly '"%%cd:~,%PATH%%cd:~,%"'
+            ConvertTo-CmdArgument 'trailing\'   | Should -BeExactly '"trailing\\"'
+            ConvertTo-CmdArgument 'back\"slash' | Should -BeExactly '"back\\""slash"'
+            ConvertTo-CmdArgument 'a&b|c'       | Should -BeExactly '"a&b|c"'
+            # ! is neutralised by /v:off on the cmd.exe launch, not by escaping
+            ConvertTo-CmdArgument '!PATH!'      | Should -BeExactly '"!PATH!"'
+        }
+    }
+
+    It 'launches .cmd shims through cmd.exe with delayed expansion off and command extensions on' -Skip:(-not $IsWindows) {
+        $shim = (Resolve-Path (Join-Path $PSScriptRoot 'Stub' 'echo-args.cmd')).ProviderPath
+        InModuleScope PSMcpClient -Parameters @{ Shim = $shim } {
+            param($Shim)
+            $spec = Resolve-McpLaunchSpec -Command $Shim -Arguments @('a b', '100%')
+            $spec.FileName | Should -BeLike '*\cmd.exe'
+            $spec.RawArguments | Should -BeExactly ('/d /e:on /v:off /s /c ""' + $Shim + '" "a b" "100%%cd:~,%""')
+        }
+    }
+}
+
+Describe 'Windows .cmd shim argument round trip' -Skip:(-not $IsWindows) {
+    It 'delivers every argument verbatim through cmd.exe and the shim''s %* forwarding' {
+        # Modelled on npx.cmd -> node.exe. Includes the BatBadBut injection shapes, %VAR% and !VAR! expansion probes,
+        # the escape trick itself as input, CRT backslash/quote edge cases, an empty argument and non-ASCII text.
+        $values = @(
+            '', 'abc', 'has space', '-y', '--flag=value with "quotes" and %percent% and !bang!'
+            'x"y', '"', 'a"b"c', '\', 'trailing\', 'C:\dir with space\', 'back\"slash', '\\"'
+            '100%', '%', '%%', '%PATH%', '%cd%', '%~dp0', '%*', '%1', '%%cd:~,%'
+            '!PATH!', '!', '^!', 'a!b!c'
+            'a&b', 'a&&b', 'a|b', 'a<b>c', 'a^b', '(x)', ')', '&calc', '/c calc', 'a b & calc & c'
+            'héllo wörld', '日本語', "tab`tsep", 'semi;colon,comma=eq', '~x', '@echo off'
+        )
+        $pwsh = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $shim = (Resolve-Path (Join-Path $PSScriptRoot 'Stub' 'echo-args.cmd')).ProviderPath
+
+        $received = InModuleScope PSMcpClient -Parameters @{ Shim = $shim; Values = $values; Pwsh = $pwsh } {
+            param($Shim, $Values, $Pwsh)
+            $launch = Start-McpProcess -Command $Shim -Arguments $Values -Environment @{ PSMCP_ECHO_PWSH = $Pwsh }
+            try {
+                $json = $launch.StdOut.ReadToEnd()
+                $launch.Process.WaitForExit(30000) | Out-Null
+                $launch.Process.ExitCode | Should -Be 0 -Because $launch.StderrTask.Result
+                , @($json | ConvertFrom-Json)
+            }
+            finally { $launch.Process.Dispose() }
+        }
+
+        $received.Count | Should -Be $values.Count
+        for ($i = 0; $i -lt $values.Count; $i++) {
+            $received[$i] | Should -BeExactly $values[$i] -Because "argument $i must reach the executable untouched"
         }
     }
 }
