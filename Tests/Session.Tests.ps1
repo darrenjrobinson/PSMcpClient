@@ -210,6 +210,25 @@ Describe 'Internal request/session helpers' {
             $spec.RawArguments | Should -BeExactly ('/d /e:on /v:off /s /c ""' + $Shim + '" "a b" "100%%cd:~,%""')
         }
     }
+
+    It 'rejects cmd arguments containing a carriage return, line feed or NUL' {
+        InModuleScope PSMcpClient {
+            foreach ($bad in "a`nb", "a`rb", "a`r`nb", "a`0b") {
+                $err = { ConvertTo-CmdArgument $bad } | Should -Throw -PassThru
+                $err.FullyQualifiedErrorId | Should -BeLike 'McpUnsafeCmdArgument*'
+            }
+        }
+    }
+
+    It 'refuses to launch a .cmd shim with a multiline argument instead of handing it to cmd.exe' -Skip:(-not $IsWindows) {
+        $shim = (Resolve-Path (Join-Path $PSScriptRoot 'Stub' 'echo-args.cmd')).ProviderPath
+        InModuleScope PSMcpClient -Parameters @{ Shim = $shim } {
+            param($Shim)
+            $err = { Resolve-McpLaunchSpec -Command $Shim -Arguments @('ok', "first line`necho injected") } | Should -Throw -PassThru
+            $err.FullyQualifiedErrorId | Should -BeLike 'McpUnsafeCmdArgument*'
+            $err.Exception.Message | Should -BeLike '*first line\necho injected*'
+        }
+    }
 }
 
 Describe 'Windows .cmd shim argument round trip' -Skip:(-not $IsWindows) {
@@ -231,12 +250,20 @@ Describe 'Windows .cmd shim argument round trip' -Skip:(-not $IsWindows) {
             param($Shim, $Values, $Pwsh)
             $launch = Start-McpProcess -Command $Shim -Arguments $Values -Environment @{ PSMCP_ECHO_PWSH = $Pwsh }
             try {
-                $json = $launch.StdOut.ReadToEnd()
-                $launch.Process.WaitForExit(30000) | Out-Null
+                # Read asynchronously and bound the wait, so a quoting regression that leaves the shim running fails the
+                # test instead of hanging the suite; the finally block kills the whole tree if that happens.
+                $stdoutTask = $launch.StdOut.ReadToEndAsync()
+                if (-not $launch.Process.WaitForExit(30000)) {
+                    throw 'echo-args.cmd did not exit within 30 seconds'
+                }
+                $stdoutTask.Wait(5000) | Out-Null
                 $launch.Process.ExitCode | Should -Be 0 -Because $launch.StderrTask.Result
-                , @($json | ConvertFrom-Json)
+                , @($stdoutTask.Result | ConvertFrom-Json)
             }
-            finally { $launch.Process.Dispose() }
+            finally {
+                if (-not $launch.Process.HasExited) { try { $launch.Process.Kill($true) } catch { } }
+                $launch.Process.Dispose()
+            }
         }
 
         $received.Count | Should -Be $values.Count

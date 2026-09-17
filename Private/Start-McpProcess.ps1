@@ -13,8 +13,19 @@ function ConvertTo-CmdArgument {
         of the dynamic cd variable to nothing, so a single literal % survives without any %VAR% lookup. ! is not escaped
         here: Resolve-McpLaunchSpec starts cmd.exe with /v:off so delayed expansion cannot fire even on hosts that enable
         it in the registry.
+
+        Arguments containing a carriage return, line feed or NUL are rejected: cmd.exe truncates its command line at a
+        line feed (silently dropping that argument's tail and every argument after it) and strips carriage returns, so
+        this transport cannot carry them and a multiline argument would otherwise be a command-injection vector.
     #>
     param([string]$Value)
+
+    if ($Value -match '[\r\n\x00]') {
+        $preview = $Value -replace "`r", '\r' -replace "`n", '\n' -replace "`0", '\0'
+        if ($preview.Length -gt 60) { $preview = $preview.Substring(0, 60) + '...' }
+        throw (New-McpError -ErrorId 'McpUnsafeCmdArgument' -Category InvalidArgument -TargetObject $Value `
+            -Message "Argument '$preview' contains a carriage return, line feed or NUL, which cmd.exe cannot pass to a .cmd/.bat shim: it truncates the command line at a line feed and strips carriage returns. Launch the underlying executable directly instead, for example 'node <path-to-cli.js>'.")
+    }
 
     $sb = [System.Text.StringBuilder]::new('"')
     $pendingBackslashes = 0
