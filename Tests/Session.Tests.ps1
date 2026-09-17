@@ -250,13 +250,17 @@ Describe 'Windows .cmd shim argument round trip' -Skip:(-not $IsWindows) {
             param($Shim, $Values, $Pwsh)
             $launch = Start-McpProcess -Command $Shim -Arguments $Values -Environment @{ PSMCP_ECHO_PWSH = $Pwsh }
             try {
-                # Read asynchronously and bound the wait, so a quoting regression that leaves the shim running fails the
-                # test instead of hanging the suite; the finally block kills the whole tree if that happens.
+                # Read asynchronously and bound every wait: if a quoting regression leaves the shim running, or cmd.exe
+                # exits while a descendant still holds a redirected pipe, the test fails instead of hanging the suite.
+                # Neither stream task's Result is touched until both bounded waits have succeeded.
                 $stdoutTask = $launch.StdOut.ReadToEndAsync()
                 if (-not $launch.Process.WaitForExit(30000)) {
                     throw 'echo-args.cmd did not exit within 30 seconds'
                 }
-                $stdoutTask.Wait(5000) | Out-Null
+                $streams = [System.Threading.Tasks.Task[]]@($stdoutTask, $launch.StderrTask)
+                if (-not [System.Threading.Tasks.Task]::WaitAll($streams, 5000)) {
+                    throw 'echo-args.cmd exited but its stdout or stderr pipe is still held open by a descendant process'
+                }
                 $launch.Process.ExitCode | Should -Be 0 -Because $launch.StderrTask.Result
                 , @($stdoutTask.Result | ConvertFrom-Json)
             }
