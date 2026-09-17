@@ -4,7 +4,6 @@ function ConvertTo-CmdArgument {
     $escaped = [string]$Value
     $escaped = $escaped -replace '"', '""'
     $escaped = $escaped -replace '%', '%%'
-    $escaped = $escaped -replace '!', '^!'
     '"' + $escaped + '"'
 }
 

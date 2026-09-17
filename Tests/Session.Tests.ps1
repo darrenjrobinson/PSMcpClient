@@ -189,7 +189,7 @@ Describe 'Internal request/session helpers' {
         InModuleScope PSMcpClient {
             ConvertTo-CmdArgument 'abc' | Should -Be '"abc"'
             ConvertTo-CmdArgument 'has space' | Should -Be '"has space"'
-            ConvertTo-CmdArgument 'x"y%z!q' | Should -Be '"x""y%%z^!q"'
+            ConvertTo-CmdArgument 'x"y%z!q' | Should -Be '"x""y%%z!q"'
         }
     }
 }
