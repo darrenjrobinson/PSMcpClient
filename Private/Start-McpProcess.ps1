@@ -1,10 +1,49 @@
 function ConvertTo-CmdArgument {
+    <#
+    .SYNOPSIS
+        Quotes one argument for the cmd.exe /s /c command line that runs a .cmd/.bat shim forwarding %* to a real executable.
+    .DESCRIPTION
+        Two parsers see this text. cmd.exe toggles its quote state on every ", expands %VAR% regardless of quotes and, when
+        delayed expansion is enabled, expands !VAR! too. The executable the shim launches (node.exe, python.exe, ...) then
+        applies the C runtime argv rules: 2n backslashes before a " collapse to n, and "" inside a quoted region is a literal ".
+
+        So every argument is wrapped in quotes to keep cmd metacharacters (& | < > ^) inert; an embedded " becomes "" (cmd's
+        quote state stays balanced and the CRT yields a literal "); backslashes that precede a " or the end of the argument
+        are doubled (CRT rule); and % becomes %%cd:~,% - cmd emits the first % literally, then expands the empty substring
+        of the dynamic cd variable to nothing, so a single literal % survives without any %VAR% lookup. ! is not escaped
+        here: Resolve-McpLaunchSpec starts cmd.exe with /v:off so delayed expansion cannot fire even on hosts that enable
+        it in the registry.
+
+        Arguments containing a carriage return, line feed or NUL are rejected: cmd.exe truncates its command line at a
+        line feed (silently dropping that argument's tail and every argument after it) and strips carriage returns, so
+        this transport cannot carry them and a multiline argument would otherwise be a command-injection vector.
+    #>
     param([string]$Value)
 
-    if ($Value -match '[\s"]') {
-        return '"' + ($Value -replace '"', '\"') + '"'
+    if ($Value -match '[\r\n\x00]') {
+        $preview = $Value -replace "`r", '\r' -replace "`n", '\n' -replace "`0", '\0'
+        if ($preview.Length -gt 60) { $preview = $preview.Substring(0, 60) + '...' }
+        throw (New-McpError -ErrorId 'McpUnsafeCmdArgument' -Category InvalidArgument -TargetObject $Value `
+            -Message "Argument '$preview' contains a carriage return, line feed or NUL, which cmd.exe cannot pass to a .cmd/.bat shim: it truncates the command line at a line feed and strips carriage returns. Launch the underlying executable directly instead, for example 'node <path-to-cli.js>'.")
     }
-    $Value
+
+    $sb = [System.Text.StringBuilder]::new('"')
+    $pendingBackslashes = 0
+    foreach ($ch in ([string]$Value).ToCharArray()) {
+        if ($ch -eq '\') { $pendingBackslashes++; continue }
+        if ($ch -eq '"') {
+            [void]$sb.Append([char]'\', $pendingBackslashes * 2)
+            [void]$sb.Append('""')
+        }
+        else {
+            [void]$sb.Append([char]'\', $pendingBackslashes)
+            if ($ch -eq '%') { [void]$sb.Append('%%cd:~,%') } else { [void]$sb.Append($ch) }
+        }
+        $pendingBackslashes = 0
+    }
+    [void]$sb.Append([char]'\', $pendingBackslashes * 2)
+    [void]$sb.Append('"')
+    $sb.ToString()
 }
 
 function Resolve-McpLaunchSpec {
@@ -54,9 +93,12 @@ function Resolve-McpLaunchSpec {
     }
 
     if ($IsWindows -and $extension -in '.cmd', '.bat') {
-        # /s makes cmd strip only the outer quotes, so a quoted path plus quoted args survives intact
+        # cmd.exe runs the shim, which forwards %* to the real executable. /s strips only the outer quotes so the quoted
+        # path plus quoted arguments survive; /d skips AutoRun; /e:on guarantees the command extensions that the %cd:~,%
+        # escape in ConvertTo-CmdArgument relies on; /v:off forces delayed expansion off so a host with DelayedExpansion=1
+        # in the registry cannot expand or swallow ! characters before the shim sees them.
         $parts = @($path) + $Arguments | ForEach-Object { ConvertTo-CmdArgument $_ }
-        return @{ FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'; RawArguments = '/d /s /c "' + ($parts -join ' ') + '"' }
+        return @{ FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'; RawArguments = '/d /e:on /v:off /s /c "' + ($parts -join ' ') + '"' }
     }
 
     @{ FileName = $path; ArgumentList = $Arguments }

@@ -16,6 +16,19 @@ function Select-McpProtocolVersion {
         -Message "Server supports protocol versions [$($Supported -join ', ')]; PSMcpClient supports $($script:ModernProtocolVersion) (modern) or $($script:LegacyProtocolVersion) and earlier (legacy).")
 }
 
+function Add-IgnoredMcpRequestId {
+    param(
+        [Parameter(Mandatory)]$Session,
+        [Parameter(Mandatory)][string]$Id
+    )
+
+    $maxIgnoredIds = 256
+    if ($Session.IgnoredIds.Count -ge $maxIgnoredIds) {
+        $Session.IgnoredIds.RemoveAt(0)
+    }
+    $Session.IgnoredIds.Add($Id)
+}
+
 function Send-McpRequest {
     [CmdletBinding()]
     param(
@@ -55,7 +68,7 @@ function Send-McpRequest {
         $read = if ($remaining -le 0) { [pscustomobject]@{ State = 'Timeout'; Line = $null } } else { Read-McpLine -Session $Session -TimeoutMs ([int]$remaining) }
 
         if ($read.State -eq 'Timeout') {
-            $Session.IgnoredIds.Add("$id")
+            Add-IgnoredMcpRequestId -Session $Session -Id "$id"
             $elapsed = [int]$stopwatch.Elapsed.TotalSeconds
             throw (New-McpError -ErrorId 'McpRequestTimeout' -Category OperationTimeout -TargetObject $Method `
                 -Exception ([System.TimeoutException]::new("MCP request '$Method' to server '$name' timed out after ${elapsed}s.")) `

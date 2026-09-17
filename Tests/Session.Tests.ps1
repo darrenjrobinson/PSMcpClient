@@ -169,3 +169,126 @@ Describe 'Session failure handling' {
         $err.FullyQualifiedErrorId | Should -BeLike 'McpSessionNotFound*'
     }
 }
+
+Describe 'Internal request/session helpers' {
+    It 'caps timed-out request id retention' {
+        InModuleScope PSMcpClient {
+            $session = [pscustomobject]@{
+                IgnoredIds = [System.Collections.Generic.List[string]]::new()
+            }
+
+            1..300 | ForEach-Object { Add-IgnoredMcpRequestId -Session $session -Id "$_" }
+
+            $session.IgnoredIds.Count | Should -Be 256
+            $session.IgnoredIds[0] | Should -Be '45'
+            $session.IgnoredIds[255] | Should -Be '300'
+        }
+    }
+
+    It 'quotes cmd arguments so cmd.exe, %VAR% expansion and the CRT argv parser all see them literally' {
+        InModuleScope PSMcpClient {
+            ConvertTo-CmdArgument 'abc'         | Should -BeExactly '"abc"'
+            ConvertTo-CmdArgument 'has space'   | Should -BeExactly '"has space"'
+            ConvertTo-CmdArgument ''            | Should -BeExactly '""'
+            ConvertTo-CmdArgument 'x"y'         | Should -BeExactly '"x""y"'
+            ConvertTo-CmdArgument '100%'        | Should -BeExactly '"100%%cd:~,%"'
+            ConvertTo-CmdArgument '%PATH%'      | Should -BeExactly '"%%cd:~,%PATH%%cd:~,%"'
+            ConvertTo-CmdArgument 'trailing\'   | Should -BeExactly '"trailing\\"'
+            ConvertTo-CmdArgument 'back\"slash' | Should -BeExactly '"back\\""slash"'
+            ConvertTo-CmdArgument 'a&b|c'       | Should -BeExactly '"a&b|c"'
+            # ! is neutralised by /v:off on the cmd.exe launch, not by escaping
+            ConvertTo-CmdArgument '!PATH!'      | Should -BeExactly '"!PATH!"'
+        }
+    }
+
+    It 'launches .cmd shims through cmd.exe with delayed expansion off and command extensions on' -Skip:(-not $IsWindows) {
+        $shim = (Resolve-Path (Join-Path $PSScriptRoot 'Stub' 'echo-args.cmd')).ProviderPath
+        InModuleScope PSMcpClient -Parameters @{ Shim = $shim } {
+            param($Shim)
+            $spec = Resolve-McpLaunchSpec -Command $Shim -Arguments @('a b', '100%')
+            $spec.FileName | Should -BeLike '*\cmd.exe'
+            $spec.RawArguments | Should -BeExactly ('/d /e:on /v:off /s /c ""' + $Shim + '" "a b" "100%%cd:~,%""')
+        }
+    }
+
+    It 'rejects cmd arguments containing a carriage return, line feed or NUL' {
+        InModuleScope PSMcpClient {
+            foreach ($bad in "a`nb", "a`rb", "a`r`nb", "a`0b") {
+                $err = { ConvertTo-CmdArgument $bad } | Should -Throw -PassThru
+                $err.FullyQualifiedErrorId | Should -BeLike 'McpUnsafeCmdArgument*'
+            }
+        }
+    }
+
+    It 'refuses to launch a .cmd shim with a multiline argument instead of handing it to cmd.exe' -Skip:(-not $IsWindows) {
+        $shim = (Resolve-Path (Join-Path $PSScriptRoot 'Stub' 'echo-args.cmd')).ProviderPath
+        InModuleScope PSMcpClient -Parameters @{ Shim = $shim } {
+            param($Shim)
+            $err = { Resolve-McpLaunchSpec -Command $Shim -Arguments @('ok', "first line`necho injected") } | Should -Throw -PassThru
+            $err.FullyQualifiedErrorId | Should -BeLike 'McpUnsafeCmdArgument*'
+            $err.Exception.Message | Should -BeLike '*first line\necho injected*'
+        }
+    }
+}
+
+Describe 'Windows .cmd shim argument round trip' -Skip:(-not $IsWindows) {
+    It 'delivers every argument verbatim through cmd.exe and the shim''s %* forwarding' {
+        # Modelled on npx.cmd -> node.exe. Includes the BatBadBut injection shapes, %VAR% and !VAR! expansion probes,
+        # the escape trick itself as input, CRT backslash/quote edge cases, an empty argument and non-ASCII text.
+        $values = @(
+            '', 'abc', 'has space', '-y', '--flag=value with "quotes" and %percent% and !bang!'
+            'x"y', '"', 'a"b"c', '\', 'trailing\', 'C:\dir with space\', 'back\"slash', '\\"'
+            '100%', '%', '%%', '%PATH%', '%cd%', '%~dp0', '%*', '%1', '%%cd:~,%'
+            '!PATH!', '!', '^!', 'a!b!c'
+            'a&b', 'a&&b', 'a|b', 'a<b>c', 'a^b', '(x)', ')', '&calc', '/c calc', 'a b & calc & c'
+            'héllo wörld', '日本語', "tab`tsep", 'semi;colon,comma=eq', '~x', '@echo off'
+        )
+        $pwsh = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $shim = (Resolve-Path (Join-Path $PSScriptRoot 'Stub' 'echo-args.cmd')).ProviderPath
+
+        $received = InModuleScope PSMcpClient -Parameters @{ Shim = $shim; Values = $values; Pwsh = $pwsh } {
+            param($Shim, $Values, $Pwsh)
+            $launch = Start-McpProcess -Command $Shim -Arguments $Values -Environment @{ PSMCP_ECHO_PWSH = $Pwsh }
+            $shimPid = $launch.Process.Id
+            $streamsClosed = $false
+            try {
+                # Read asynchronously and bound every wait: if a quoting regression leaves the shim running, or cmd.exe
+                # exits while a descendant still holds a redirected pipe, the test fails instead of hanging the suite.
+                # Neither stream task's Result is touched until both bounded waits have succeeded.
+                $stdoutTask = $launch.StdOut.ReadToEndAsync()
+                if (-not $launch.Process.WaitForExit(30000)) {
+                    throw 'echo-args.cmd did not exit within 30 seconds'
+                }
+                $streams = [System.Threading.Tasks.Task[]]@($stdoutTask, $launch.StderrTask)
+                if (-not [System.Threading.Tasks.Task]::WaitAll($streams, 5000)) {
+                    throw 'echo-args.cmd exited but its stdout or stderr pipe is still held open by a descendant process'
+                }
+                $streamsClosed = $true
+                $launch.Process.ExitCode | Should -Be 0 -Because $launch.StderrTask.Result
+                , @($stdoutTask.Result | ConvertFrom-Json)
+            }
+            finally {
+                if (-not $launch.Process.HasExited) { try { $launch.Process.Kill($true) } catch { } }
+                if (-not $streamsClosed) {
+                    # cmd.exe may already be gone while the pwsh it spawned still holds a pipe. Process.Kill(true) cannot
+                    # reach descendants of an exited process, but they keep the dead shim's PID as ParentProcessId, so
+                    # walk that relationship and stop whatever is left.
+                    $stopDescendants = {
+                        param($ParentId)
+                        Get-CimInstance Win32_Process -Filter "ParentProcessId = $ParentId" -ErrorAction SilentlyContinue | ForEach-Object {
+                            & $stopDescendants $_.ProcessId
+                            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch { }
+                        }
+                    }
+                    & $stopDescendants $shimPid
+                }
+                $launch.Process.Dispose()
+            }
+        }
+
+        $received.Count | Should -Be $values.Count
+        for ($i = 0; $i -lt $values.Count; $i++) {
+            $received[$i] | Should -BeExactly $values[$i] -Because "argument $i must reach the executable untouched"
+        }
+    }
+}
