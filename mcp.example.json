@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "everything": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"]
+    },
+    "entra-news": {
+      "command": "npx",
+      "args": ["-y", "entra-news-mcp"]
+    },
+    "hibp": {
+      "command": "npx",
+      "args": ["-y", "@darrenjrobinson/hibp-mcp"],
+      "env": {
+        "HIBP_API_KEY": "<your-hibp-api-key>",
+        "HIBP_SUBSCRIPTION_PLAN": "Pwned 1"
+      },
+      "disabled": true
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Temp"],
+      "disabled": true
+    }
+  }
+}

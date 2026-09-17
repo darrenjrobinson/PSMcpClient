@@ -1,0 +1,10 @@
+# Real MCP config files can carry API keys; only mcp.example.json (placeholders) is tracked
+mcp.json
+
+# Design spec and blog draft live alongside the module locally, not in the repo
+PowerShell-MCP-Client-Module-Spec.md
+blog-psmcpclient-quickstart.md
+docs/
+
+# Local tooling output
+graphify-out/
