@@ -249,6 +249,8 @@ Describe 'Windows .cmd shim argument round trip' -Skip:(-not $IsWindows) {
         $received = InModuleScope PSMcpClient -Parameters @{ Shim = $shim; Values = $values; Pwsh = $pwsh } {
             param($Shim, $Values, $Pwsh)
             $launch = Start-McpProcess -Command $Shim -Arguments $Values -Environment @{ PSMCP_ECHO_PWSH = $Pwsh }
+            $shimPid = $launch.Process.Id
+            $streamsClosed = $false
             try {
                 # Read asynchronously and bound every wait: if a quoting regression leaves the shim running, or cmd.exe
                 # exits while a descendant still holds a redirected pipe, the test fails instead of hanging the suite.
@@ -261,11 +263,25 @@ Describe 'Windows .cmd shim argument round trip' -Skip:(-not $IsWindows) {
                 if (-not [System.Threading.Tasks.Task]::WaitAll($streams, 5000)) {
                     throw 'echo-args.cmd exited but its stdout or stderr pipe is still held open by a descendant process'
                 }
+                $streamsClosed = $true
                 $launch.Process.ExitCode | Should -Be 0 -Because $launch.StderrTask.Result
                 , @($stdoutTask.Result | ConvertFrom-Json)
             }
             finally {
                 if (-not $launch.Process.HasExited) { try { $launch.Process.Kill($true) } catch { } }
+                if (-not $streamsClosed) {
+                    # cmd.exe may already be gone while the pwsh it spawned still holds a pipe. Process.Kill(true) cannot
+                    # reach descendants of an exited process, but they keep the dead shim's PID as ParentProcessId, so
+                    # walk that relationship and stop whatever is left.
+                    $stopDescendants = {
+                        param($ParentId)
+                        Get-CimInstance Win32_Process -Filter "ParentProcessId = $ParentId" -ErrorAction SilentlyContinue | ForEach-Object {
+                            & $stopDescendants $_.ProcessId
+                            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch { }
+                        }
+                    }
+                    & $stopDescendants $shimPid
+                }
                 $launch.Process.Dispose()
             }
         }
