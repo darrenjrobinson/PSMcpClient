@@ -1,10 +1,11 @@
 function ConvertTo-CmdArgument {
     param([string]$Value)
 
-    if ($Value -match '[\s"]') {
-        return '"' + ($Value -replace '"', '\"') + '"'
-    }
-    $Value
+    $escaped = [string]$Value
+    $escaped = $escaped -replace '"', '""'
+    $escaped = $escaped -replace '%', '%%'
+    $escaped = $escaped -replace '!', '^!'
+    '"' + $escaped + '"'
 }
 
 function Resolve-McpLaunchSpec {

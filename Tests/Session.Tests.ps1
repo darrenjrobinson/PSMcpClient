@@ -169,3 +169,27 @@ Describe 'Session failure handling' {
         $err.FullyQualifiedErrorId | Should -BeLike 'McpSessionNotFound*'
     }
 }
+
+Describe 'Internal request/session helpers' {
+    It 'caps timed-out request id retention' {
+        InModuleScope PSMcpClient {
+            $session = [pscustomobject]@{
+                IgnoredIds = [System.Collections.Generic.List[string]]::new()
+            }
+
+            1..300 | ForEach-Object { Add-IgnoredMcpRequestId -Session $session -Id "$_" }
+
+            $session.IgnoredIds.Count | Should -Be 256
+            $session.IgnoredIds[0] | Should -Be '45'
+            $session.IgnoredIds[255] | Should -Be '300'
+        }
+    }
+
+    It 'escapes cmd arguments using cmd-safe quoting rules' {
+        InModuleScope PSMcpClient {
+            ConvertTo-CmdArgument 'abc' | Should -Be '"abc"'
+            ConvertTo-CmdArgument 'has space' | Should -Be '"has space"'
+            ConvertTo-CmdArgument 'x"y%z!q' | Should -Be '"x""y%%z^!q"'
+        }
+    }
+}
