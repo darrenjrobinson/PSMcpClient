@@ -19,7 +19,7 @@
     AliasesToExport      = @()
     PrivateData          = @{
         PSData = @{
-            Tags         = @('MCP', 'ModelContextProtocol', 'AI', 'LLM', 'PSAISuite', 'Client', 'JSON-RPC', 'Tools', 'Agent')
+            Tags         = @('MCP', 'ModelContextProtocol', 'AI', 'LLM', 'PSAISuite', 'Client', 'JSON-RPC', 'Tools', 'Agent', 'PowerShell', 'pwsh')
             ProjectUri   = 'https://github.com/darrenjrobinson/PSMcpClient'
             ReleaseNotes ='Initial release: stdio transport, dual-era (2026-07-28 modern and 2025-11-25 legacy) protocol support, tools/list, tools/call, PSAISuite tool bridge.'
         }

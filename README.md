@@ -1,5 +1,7 @@
 # PSMcpClient
 
+[![PSGallery Version](https://img.shields.io/powershellgallery/v/PSMcpClient.svg?style=flat&logo=powershell&label=PSGallery%20Version)](https://www.powershellgallery.com/packages/PSMcpClient) [![PSGallery Downloads](https://img.shields.io/powershellgallery/dt/PSMcpClient.svg?style=flat&logo=powershell&label=PSGallery%20Downloads)](https://www.powershellgallery.com/packages/PSMcpClient)
+
 A PowerShell 7 **MCP client**. Connect to published stdio [Model Context Protocol](https://modelcontextprotocol.io) servers (typically launched with `npx`), list and call their tools from PowerShell, and hand those tools to a frontier LLM through [PSAISuite](https://github.com/dfinke/PSAISuite) `Invoke-ChatCompletion -Tools`.
 
 PowerShell-as-MCP-*server* is well covered (PSMCP, PowerShell.MCP). This module is the other direction: PowerShell as the *host* that consumes MCP servers. It never calls an LLM itself and has no module dependencies; PSAISuite is only needed for the bridge scenario.
@@ -17,7 +19,14 @@ PowerShell-as-MCP-*server* is well covered (PSMCP, PowerShell.MCP). This module 
 
 ## Install
 
-From source while unpublished:
+From the [PowerShell Gallery](https://www.powershellgallery.com/packages/PSMcpClient):
+
+```powershell
+Install-Module PSMcpClient -Scope CurrentUser
+Import-Module PSMcpClient
+```
+
+Or from source:
 
 ```powershell
 Import-Module ./PSMcpClient/PSMcpClient.psd1
@@ -26,6 +35,8 @@ Import-Module ./PSMcpClient/PSMcpClient.psd1
 ## Quick start
 
 ```powershell
+Import-Module PSMcpClient
+
 Connect-McpServer -Name everything -Command npx -Arguments '-y','@modelcontextprotocol/server-everything'
 
 Get-McpServer                              # Name, ServerName, ProtocolVersion, Era, ProcessId, Connected, ToolCount
